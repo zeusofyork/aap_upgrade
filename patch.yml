@@ -1,0 +1,89 @@
+---
+- name: Read CVE patch commands from Excel and execute on RHEL hosts
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    excel_path: "./cve_patches.xlsx"
+    sheet_name: "Sheet1"          # adjust if needed
+    # Column letters in your file:
+    cve_col: "A"
+    cmd_col: "B"
+
+  tasks:
+    - name: Read the Excel sheet
+      delegate_to: localhost
+      run_once: true
+      community.general.read_excel:
+        path: "{{ excel_path }}"
+        sheet: "{{ sheet_name }}"
+      register: excel_data
+
+    - name: Normalize rows into [{cve:..., cmd:...}] from columns A/B
+      delegate_to: localhost
+      run_once: true
+      vars:
+        rows: "{{ excel_data.rows | default([]) }}"
+      set_fact:
+        cve_cmd_pairs: >-
+          {{
+            cve_cmd_pairs | default([]) + (
+              [
+                {
+                  'cve': (item[cve_col] | default('') | string | trim),
+                  'cmd': (item[cmd_col] | default('') | string | trim)
+                }
+              ]
+              if (item is mapping)
+              else []
+            )
+          }}
+      loop: "{{ rows }}"
+
+    - name: Drop blank rows and obvious header row
+      delegate_to: localhost
+      run_once: true
+      set_fact:
+        cve_cmd_pairs: >-
+          {{
+            cve_cmd_pairs
+            | selectattr('cmd', 'defined')
+            | selectattr('cmd', 'ne', '')
+            | selectattr('cve', 'defined')
+            | selectattr('cve', 'ne', '')
+            | rejectattr('cve', 'match', '^(?i)cve$')      # if header cell literally says "CVE"
+            | rejectattr('cmd', 'match', '^(?i)command$')  # if header cell literally says "Command"
+            | list
+          }}
+
+    - name: Build command list (column B)
+      delegate_to: localhost
+      run_once: true
+      set_fact:
+        patch_commands: "{{ cve_cmd_pairs | map(attribute='cmd') | list }}"
+
+    - name: Show what will be executed (once)
+      delegate_to: localhost
+      run_once: true
+      debug:
+        msg:
+          - "Excel: {{ excel_path }} / sheet={{ sheet_name }}"
+          - "Commands to run ({{ patch_commands | length }}):"
+          - "{{ patch_commands }}"
+
+    - name: Execute patch commands on each host
+      ansible.builtin.shell: "{{ item }}"
+      args:
+        executable: /bin/bash
+      loop: "{{ patch_commands }}"
+      register: cmd_results
+      changed_when: true
+
+    - name: Summarize results per host
+      ansible.builtin.debug:
+        msg: |
+          Host: {{ inventory_hostname }}
+          Ran {{ cmd_results.results | length }} commands
+          Failures: {{ cmd_results.results | selectattr('rc','ne',0) | list | length }}
+      when: cmd_results is defined
