@@ -1,0 +1,12 @@
+---
+# Install with:
+#   ansible-galaxy collection install -r collections/requirements.yml
+#
+# community.general  – provides community.general.read_excel
+# community.postgresql – provides community.postgresql.postgresql_query
+
+collections:
+  - name: community.general
+    version: ">=9.0.0"
+  - name: community.postgresql
+    version: ">=3.0.0"
